@@ -1,0 +1,20 @@
+# Python 3.13.9 | CUDA 12.8
+# Install: pip install -r requirements.txt
+
+# Pytorch
+# Install: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+torch>=2.9.0
+torchvision>=0.20.0
+
+# Dataset
+medmnist>=3.0.0
+
+# Visualization
+matplotlib>=3.8.0
+seaborn>=0.13.0
+
+# Evaluation
+scikit-learn>=1.7.0
+
+# Utilities
+numpy>=2.3.5

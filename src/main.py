@@ -7,7 +7,7 @@ from config import (
     config,
 )
 
-from datav2 import load_data
+from data import load_data
 
 try:
     import torch

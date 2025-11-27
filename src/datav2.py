@@ -1,3 +1,4 @@
+import os
 from medmnist import OCTMNIST
 from matplotlib import pyplot as plt
 import numpy as np
@@ -24,6 +25,9 @@ def load_data():
     return x_train, y_train, x_val, y_val, x_test, y_test
 
 def visualize_data(train, val, test):
+    plots_dir = os.path.join(os.getcwd(), "plots")
+    os.makedirs(plots_dir, exist_ok=True)
+
     labels = ["CNV", "DME", "Drusen", "Normal"]
     rows = 4
 
@@ -49,7 +53,7 @@ def visualize_data(train, val, test):
         plt.xlabel(labels[label_idx % 4])
         plot_idx += 1
 
-    plt.show()
+    plt.savefig(os.path.join(plots_dir, 'dataset_image_examples.png'), dpi=150, bbox_inches='tight')
     plt.close()
 
     # Plot class distribution in each set
@@ -64,7 +68,7 @@ def visualize_data(train, val, test):
         plt.bar(labels, class_counts, color=['blue', 'orange', 'green', 'red'])
         plt.title(f"{set_names[i]} Set Class Distribution")
         
-    plt.show()
+    plt.savefig(os.path.join(plots_dir, 'dataset_class_distribution.png'), dpi=150, bbox_inches='tight')
     plt.close()
 
 #load_data()

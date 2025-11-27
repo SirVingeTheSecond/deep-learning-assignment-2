@@ -9,23 +9,23 @@ class CNN(nn.Module):
 		def __init__(self, in_channels=3, num_classes=4, init_weights=True):
 			super().__init__()
 			self.features = nn.Sequential(
-				nn.LazyConv2d(32, kernel_size=3, padding=1),
+				nn.LazyConv2d(64, kernel_size=3, padding=1),
 				nn.ReLU(inplace=True),
 				nn.MaxPool2d(kernel_size=2), #32x32
-				nn.LazyConv2d(64, kernel_size=3, padding=1),
+				nn.LazyConv2d(128, kernel_size=3, padding=1),
 				nn.ReLU(inplace=True), 
 				nn.MaxPool2d(kernel_size=2), #16x16
-				nn.LazyConv2d(128, kernel_size=3, padding=1),
+				nn.LazyConv2d(256, kernel_size=3, padding=1),
 				nn.ReLU(inplace=True),
 				nn.MaxPool2d(kernel_size=2), #8x8
 			)
 
 			self.classifier = nn.Sequential(
 				nn.Flatten(),
-				nn.LazyLinear(256),
+				nn.LazyLinear(128),
 				nn.ReLU(inplace=True),
 				nn.Dropout(p=0.5),
-				nn.LazyLinear(128),
+				nn.LazyLinear(64),
 				nn.ReLU(inplace=True),
 				nn.LazyLinear(num_classes),
 			)

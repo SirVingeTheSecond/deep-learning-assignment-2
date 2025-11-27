@@ -10,7 +10,7 @@ config = {
 	"subsample_train": None,  # Set to an int so we can debug quicker?
 
 	# Training
-    "batch_size": 64,
+    "batch_size": 256,
     "epochs": 50,
     "lr": 1e-3,
 

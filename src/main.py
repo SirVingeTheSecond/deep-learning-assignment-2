@@ -113,6 +113,8 @@ def train_quick():
 
         print(f"Epoch {epoch}/{epochs} - train_loss: {epoch_loss:.4f} - train_acc: {train_acc:.4f} - val_acc: {val_acc:.4f}")
 
+    torch.save(model.state_dict(), "cnn_weights.pth")
+
     # Plot metrics using matplotlib (saved to plots/). Handle missing matplotlib gracefully.
     try:
         import matplotlib.pyplot as plt

@@ -57,6 +57,10 @@ def train_quick():
                 num_classes=config.get("num_classes", 4))
     model.to(device)
 
+    image_size = config.get("image_size", 64)
+    dummy = torch.randn(1, 1, image_size, image_size).to(device)
+    model(dummy) # initializes Lazy layers
+
     print(f"Model with {count_parameters(model):,} trainable parameters.")
 
     # Optimizer & loss

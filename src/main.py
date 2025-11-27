@@ -61,6 +61,8 @@ def train_quick():
     dummy = torch.randn(1, 1, image_size, image_size).to(device)
     model(dummy) # initializes Lazy layers
 
+    model._init_weights()
+
     print(f"Model with {count_parameters(model):,} trainable parameters.")
 
     # Optimizer & loss

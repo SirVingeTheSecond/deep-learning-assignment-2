@@ -14,5 +14,5 @@ config = {
 	"seed": 0,
 
 	# Device: 'cpu' or 'cuda'. Set to 'cuda' if you want GPU and it's available.
-	"device": "cpu",
+	"device": "cuda",
 }

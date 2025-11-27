@@ -19,7 +19,7 @@ class CNN(nn.Module):
 
 			self.classifier = nn.Sequential(
 				nn.Flatten(),
-				nn.Linear(64 * 7 * 7, 128),
+				nn.Linear(64 * 16 * 16, 128),
 				nn.ReLU(inplace=True),
 				nn.Dropout(p=0.5),
 				nn.Linear(128, num_classes),

@@ -7,7 +7,7 @@ from config import (
     config,
 )
 
-from data import load_data
+from datav2 import load_data
 
 try:
     import torch
@@ -28,21 +28,21 @@ def train_quick():
     torch.manual_seed(config.get("seed", 0))
 
     # Load image tensors (N, C, H, W)
-    Xtr, ytr, Xva, yva, Xte, yte = load_data(size=config.get("image_size", 28),
-                                            subsample_train=config.get("subsample_train", None),
-                                            seed=config.get("seed", 0),
-                                            return_images=True)
+    x_train, y_train, x_val, y_val, x_test, y_test = load_data()
 
     device = config.get("device", "cpu")
     if device == "cuda" and not torch.cuda.is_available():
         print("CUDA requested but not available; falling back to CPU.")
         device = "cpu"
 
-    # Convert to tensors and create dataloaders
-    Xtr_t = torch.from_numpy(Xtr)
-    ytr_t = torch.from_numpy(ytr).long()
-    Xva_t = torch.from_numpy(Xva)
-    yva_t = torch.from_numpy(yva).long()
+    # Convert to torch
+    Xtr_t = torch.from_numpy(x_train).to(torch.float32)
+    ytr_t = torch.from_numpy(y_train).to(torch.long)
+    Xva_t = torch.from_numpy(x_val).to(torch.float32)
+    yva_t = torch.from_numpy(y_val).to(torch.long)
+
+    print(f"Training data shape: {Xtr_t.shape}, Training labels shape: {ytr_t.shape}")
+
 
     train_ds = TensorDataset(Xtr_t, ytr_t)
     val_ds = TensorDataset(Xva_t, yva_t)
@@ -52,7 +52,7 @@ def train_quick():
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
     # Build model — infer number of channels from the training data
-    inferred_in_channels = int(Xtr.shape[1])
+    inferred_in_channels = Xtr_t.shape[1]
     model = CNN(in_channels=inferred_in_channels,
                 num_classes=config.get("num_classes", 4))
     model.to(device)

@@ -17,7 +17,9 @@ try:
 except Exception:
     # Defer import errors until runtime; main will print a helpful message.
     torch = None
-
+# The filebuffer appends, remeber to add newlines \n for each output
+logger = open("./output.log","a")
+#logger.writelines("just works \n")
 
 def train_quick():
     if torch is None:
@@ -109,6 +111,8 @@ def train_quick():
                 out = model(xb)
                 preds = out.argmax(dim=1)
                 correct += (preds == yb).sum().item()
+
+
                 total += yb.size(0)
 
         val_acc = correct / total if total > 0 else 0.0
@@ -119,7 +123,7 @@ def train_quick():
 
         print(f"Epoch {epoch}/{epochs} - train_loss: {epoch_loss:.4f} - train_acc: {train_acc:.4f} - val_acc: {val_acc:.4f}")
 
-    torch.save(model.state_dict(), "cnn_weights.pth")
+    torch.save(model.state_/dict(), "cnn_weights.pth")
 
     # Plot metrics using matplotlib (saved to plots/). Handle missing matplotlib gracefully.
     try:
@@ -152,6 +156,53 @@ def train_quick():
         plt.savefig(out_acc, dpi=150, bbox_inches='tight')
         plt.close()
         print(f"Saved accuracy plot: {out_acc}")
+
+        # generating prediction data on per class level
+        all_preds = []
+        all_true = []
+        model.eval()
+
+        with torch.no_grad():
+            for xb, yb in val_loader:
+                xb = xb.to(device)
+                yb = yb.to(device)
+
+                out = model(xb)
+                preds = out.argmax(dim=1)
+
+                # Move to CPU and convert to numpy to accumulate
+                all_preds.extend(preds.cpu().numpy())
+                all_true.extend(yb.cpu().numpy())
+        from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+        import matplotlib.pyplot as plt
+
+        # Compute the matrix
+        cm = confusion_matrix(all_true, all_preds, normalize='true')
+
+        # Define class names (If you know them, replace these strings)
+        # Example: class_names = ["Healthy", "Mild", "Moderate", "Severe"]
+        class_names = [str(i) for i in range(config.get("num_classes", 4))]
+
+        # Setup the plot
+        fig, ax = plt.subplots(figsize=(8, 8))
+        disp = ConfusionMatrixDisplay(confusion_matrix=cm,
+                                      display_labels=class_names)
+
+
+        # Plot with a blue colormap
+        disp.plot(cmap=plt.cm.Blues, ax=ax, colorbar=False)
+
+        plt.title('Confusion Matrix')
+
+        # Save results
+        plots_dir = os.path.join(os.getcwd(), "plots")
+        os.makedirs(plots_dir, exist_ok=True)
+        out_cm = os.path.join(plots_dir, 'confusion_matrix.png')
+
+        plt.savefig(out_cm, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"Saved confusion matrix: {out_cm}")
+
     except Exception as e:
         print("Skipped plotting (matplotlib missing or error):", e)
 

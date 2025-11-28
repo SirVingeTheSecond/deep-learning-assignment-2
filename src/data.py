@@ -3,7 +3,7 @@ from medmnist import OCTMNIST
 from matplotlib import pyplot as plt
 import numpy as np
 
-def load_data():
+def load_data(normalize=True):
     train = OCTMNIST("train", download = True, size=64)
     val = OCTMNIST("val", download = True, size=64)
     test = OCTMNIST("test", download = True, size=64)
@@ -21,6 +21,18 @@ def load_data():
     x_test = np.array(test.imgs).astype(np.float32)
     x_test = x_test[:, None, :, :]     # shape → (N, 1, 64, 64)
     y_test = np.array(test.labels).ravel().astype(np.int64)
+
+    # Normalization using the training set only
+    if normalize:
+        mean = x_train.mean()
+        std = x_train.std()
+        print(f"[Before] mean={mean:.2f}, std={std:.2f}")
+
+        x_train = (x_train - mean) / std
+        x_val = (x_val - mean) / std
+        x_test = (x_test - mean) / std
+
+        print(f"[After] train mean={x_train.mean():.4f}, std={x_train.std():.4f}")
 
     return x_train, y_train, x_val, y_val, x_test, y_test
 

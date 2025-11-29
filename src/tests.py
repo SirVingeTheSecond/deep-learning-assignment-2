@@ -75,7 +75,7 @@ def evaulateModel(weights_path: str):
     dummy = torch.randn(1, 1, image_size, image_size).to(device)
     model(dummy) # initializes Lazy layers
 
-    model.load_state_dict(torch.load(weights_path, map_location=device))
+    model.load_state_dict(torch.load(weights_path, map_location=device).get("model_state_dict"))
     
     evaluateModel(model, x_test, y_test)
 
@@ -86,8 +86,8 @@ if __name__ == "__main__":
         print("Usage: python main.py <path_to_model_weights>")
         sys.exit(1)
 
-    if (not sys.argv[1].endswith('.pth')):
-        print("Please provide a valid model weights file with .pth extension.")
+    if (not sys.argv[1].endswith('.pth') and not sys.argv[1].endswith('.pt') ):
+        print("Please provide a valid model weights file with .pth or .pt extension.")
         sys.exit(1)
 
     if (not os.path.isfile(sys.argv[1])):

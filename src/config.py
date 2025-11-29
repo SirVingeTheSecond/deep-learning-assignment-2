@@ -42,8 +42,8 @@ config = {
             "weight_decay": [0, 1e-4, 5e-4],
         },
         "screening_epochs": 10,
-        "screening_threshold": 0.90,
-        "full_epochs": 50,
+        "screening_threshold": 0.93,
+        "full_epochs": 20,
     },
 }
 

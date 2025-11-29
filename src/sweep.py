@@ -24,22 +24,7 @@ from torch.utils.data import TensorDataset, DataLoader
 
 from config import config as base_config
 from data import load_data
-
-
-class EarlyStopping:
-    def __init__(self, patience: int = 5, min_delta: float = 0.001):
-        self.patience = patience
-        self.min_delta = min_delta
-        self.best_loss = float('inf')
-        self.counter = 0
-
-    def __call__(self, val_loss: float) -> bool:
-        if val_loss < self.best_loss - self.min_delta:
-            self.best_loss = val_loss
-            self.counter = 0
-            return False
-        self.counter += 1
-        return self.counter >= self.patience
+from training import train_one_epoch, validate, EarlyStopping
 
 
 sweep_config = base_config.get("sweep", {})
@@ -147,41 +132,6 @@ def _config_to_name(config: Dict[str, Any]) -> str:
     parts.append(f"lr{config['lr']}")
     parts.append(f"wd{config['weight_decay']}")
     return "_".join(parts)
-
-
-def train_one_epoch(model, train_loader, criterion, optimizer, device):
-    model.train()
-    running_loss, correct, total = 0.0, 0, 0
-
-    for xb, yb in train_loader:
-        xb, yb = xb.to(device), yb.to(device)
-        optimizer.zero_grad()
-        out = model(xb)
-        loss = criterion(out, yb)
-        loss.backward()
-        optimizer.step()
-
-        running_loss += loss.item() * xb.size(0)
-        correct += (out.argmax(dim=1) == yb).sum().item()
-        total += yb.size(0)
-
-    return running_loss / total, correct / total
-
-
-def validate(model, val_loader, criterion, device):
-    model.eval()
-    running_loss, correct, total = 0.0, 0, 0
-
-    with torch.no_grad():
-        for xb, yb in val_loader:
-            xb, yb = xb.to(device), yb.to(device)
-            out = model(xb)
-            loss = criterion(out, yb)
-            running_loss += loss.item() * xb.size(0)
-            correct += (out.argmax(dim=1) == yb).sum().item()
-            total += yb.size(0)
-
-    return running_loss / total, correct / total
 
 
 def run_experiment_with_screening(
@@ -409,7 +359,6 @@ def run_grid_search(
     all_results = []
 
     if continue_on_pass:
-        # Screen each config and immediately continue if passed
         for i, exp_config in enumerate(all_configs):
             print(f"\n[{i+1}/{len(all_configs)}]")
             results = run_experiment_with_screening(
@@ -418,7 +367,6 @@ def run_grid_search(
             )
             all_results.append(results)
     else:
-        # Screen all first
         print(f"\n{'#'*60}")
         print(f"PHASE 1: SCREENING ({screening_epochs} epochs, threshold={screening_threshold:.0%})")
         print(f"{'#'*60}")

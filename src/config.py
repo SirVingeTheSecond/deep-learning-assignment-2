@@ -49,12 +49,12 @@ config = {
 
 
 def print_config():
-    print("=" * 30)
+    print("=" * 50)
     print("Configuration")
-    print("=" * 30)
+    print("=" * 50)
     for key, value in config.items():
         print(f"  {key}: {value}")
-    print("=" * 30)
+    print("=" * 50)
 
 
 if __name__ == "__main__":

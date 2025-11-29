@@ -4,73 +4,13 @@ import matplotlib.pyplot as plt
 
 import torch
 from torch import nn, optim
-from torch.utils.data import TensorDataset, DataLoader
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
 from config import config
 from data import load_data
 from cnn import CNN, count_parameters
 from experiment import Experiment
-
-
-def create_dataloaders(x_train, y_train, x_val, y_val, batch_size: int):
-    """Create DataLoaders from numpy arrays."""
-    train_ds = TensorDataset(
-        torch.from_numpy(x_train).float(),
-        torch.from_numpy(y_train).long()
-    )
-    val_ds = TensorDataset(
-        torch.from_numpy(x_val).float(),
-        torch.from_numpy(y_val).long()
-    )
-
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
-
-    return train_loader, val_loader
-
-
-def train_one_epoch(model, train_loader, criterion, optimizer, device):
-    model.train()
-    running_loss = 0.0
-    correct = 0
-    total = 0
-
-    for xb, yb in train_loader:
-        xb, yb = xb.to(device), yb.to(device)
-
-        optimizer.zero_grad()
-        out = model(xb)
-        loss = criterion(out, yb)
-        loss.backward()
-        optimizer.step()
-
-        running_loss += loss.item() * xb.size(0)
-        preds = out.argmax(dim=1)
-        correct += (preds == yb).sum().item()
-        total += yb.size(0)
-
-    return running_loss / total, correct / total
-
-
-def validate(model, val_loader, criterion, device):
-    model.eval()
-    running_loss = 0.0
-    correct = 0
-    total = 0
-
-    with torch.no_grad():
-        for xb, yb in val_loader:
-            xb, yb = xb.to(device), yb.to(device)
-            out = model(xb)
-            loss = criterion(out, yb)
-
-            running_loss += loss.item() * xb.size(0)
-            preds = out.argmax(dim=1)
-            correct += (preds == yb).sum().item()
-            total += yb.size(0)
-
-    return running_loss / total, correct / total
+from training import create_dataloaders, train_one_epoch, validate, get_early_stopping
 
 
 def plot_training_curves(history: dict, experiment: Experiment):
@@ -153,7 +93,7 @@ def train(experiment_name: str, normalize: bool = True):
     device = config.get("device", "cpu")
     if device == "cuda" and not torch.cuda.is_available():
         device = "cpu"
-        exp.log("Since CUDA is not available, I will be using your slow ass CPU ⎛⎝( ` ᢍ ´ )⎠⎞ᵐᵘʰᵃʰᵃ")
+        exp.log("Since CUDA is not available, I will be using your slow ass CPU ⎛⎝( ` ᢍ ´ )⎠⎞ᵘʰᵃʰᵃ")
     exp.log(f"Device: {device}")
 
     # Load data
@@ -191,6 +131,12 @@ def train(experiment_name: str, normalize: bool = True):
         lr=config.get("lr", 1e-3),
         weight_decay=config.get("weight_decay", 0)
     )
+
+    # Early stopping
+    early_stopping = get_early_stopping()
+    if early_stopping:
+        es_config = config.get("early_stopping", {})
+        exp.log(f"Early stopping: patience={es_config.get('patience')}, min_delta={es_config.get('min_delta')}")
 
     # Training history
     history = {
@@ -234,9 +180,14 @@ def train(experiment_name: str, normalize: bool = True):
                 model, optimizer, epoch, val_acc, val_loss, is_best=True
             )
 
-    # Save final model
+        # Early stopping check
+        if early_stopping and early_stopping(val_loss):
+            exp.log(f"Early stopping triggered at epoch {epoch}")
+            break
+
+    # Save the final model
     exp.save_checkpoint(
-        model, optimizer, epochs, val_acc, val_loss, is_best=False
+        model, optimizer, epoch, val_acc, val_loss, is_best=False
     )
 
     # Generate plots

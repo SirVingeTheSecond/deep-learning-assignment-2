@@ -45,7 +45,7 @@ def load_data(normalize=True, augment_minority=True):
                 # Find indices of this class
                 indices = np.where(y_train == cls)[0]
                 # Number of new samples to generate
-                n_aug = max_count - count
+                n_aug = min(max_count - count, count * 3)  # limit to 3x original count
 
                 for i in range(n_aug):
                     idx = indices[i % len(indices)]

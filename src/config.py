@@ -5,10 +5,10 @@ config = {
     "in_channels": 1,
     "num_classes": 4,
     "class_names": ["CNV", "DME", "Drusen", "Normal"],
+    "dropout": 0.3,
 
     # Data
     "image_size": 64,
-    "subsample_train": None,  # Set to an int so we can debug quicker?
 
     # Training
     "batch_size": 128,
@@ -16,14 +16,10 @@ config = {
     "lr": 1e-3,
     "weight_decay": 1e-4,
 
-    "seed": 0,
+    "seed": 42,
 
     # Device
     "device": "cuda" if torch.cuda.is_available() else "cpu",
-
-    # Checkpoint
-    "checkpoint_dir": "checkpoints",
-    "save_best": True,
 
     # Early stopping
     "early_stopping": {

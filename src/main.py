@@ -9,10 +9,11 @@ from torch import nn, optim
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
 from config import config
-from data import load_data
+from data import load_data, create_dataloaders
 from cnn import CNN, count_parameters
 from experiment import Experiment
-from training import create_dataloaders, train_one_epoch, validate, get_early_stopping
+from training import train_one_epoch, evaluate, get_early_stopping
+
 
 # What a getter...
 def get_configurable_cnn():
@@ -102,7 +103,7 @@ def load_sweep_config(sweep_path: str) -> dict:
 
 
 def train(experiment_name: str, normalize: bool = True, sweep_config_override: dict = None):
-    # Create experiment (this is auto-generated)
+    # Create experiment
     exp = Experiment(experiment_name)
 
     # Build run config which is a copy of base config + runtime settings
@@ -117,7 +118,7 @@ def train(experiment_name: str, normalize: bool = True, sweep_config_override: d
 
     exp.save_config(run_config)
 
-    # Log the start of the experiment start
+    # Log the start of the experiment
     exp.log("=" * 30)
     exp.log(f"Experiment: {experiment_name}")
     exp.log(f"Normalize: {normalize}")
@@ -136,7 +137,7 @@ def train(experiment_name: str, normalize: bool = True, sweep_config_override: d
     device = config.get("device", "cpu")
     if device == "cuda" and not torch.cuda.is_available():
         device = "cpu"
-        exp.log("Since CUDA is not available, I will be using your slow ass CPU ⎛⎝( ` ᢍ ´ )⎠⎞ᵘʰᵃʰᵃ")
+        exp.log("CUDA not available, using CPU")
     exp.log(f"Device: {device}")
 
     # Load data
@@ -182,14 +183,6 @@ def train(experiment_name: str, normalize: bool = True, sweep_config_override: d
         model = CNN(in_channels=in_channels, num_classes=num_classes)
         model.to(device)
 
-        # Init lazy layers
-        image_size = config.get("image_size", 64)
-        dummy = torch.randn(1, in_channels, image_size, image_size).to(device)
-        model(dummy)
-
-        # Init weights
-        model._init_weights()
-
         lr = config.get("lr", 1e-3)
         weight_decay = config.get("weight_decay", 0)
 
@@ -224,12 +217,12 @@ def train(experiment_name: str, normalize: bool = True, sweep_config_override: d
     exp.log("-" * 60)
 
     for epoch in range(1, epochs + 1):
-        train_loss, train_acc = train_one_epoch(
-            model, train_loader, criterion, optimizer, device
-        )
-        val_loss, val_acc = validate(
-            model, val_loader, criterion, device
-        )
+        # Train
+        train_one_epoch(model, train_loader, criterion, optimizer, device)
+
+        # Evaluate both train and val in eval mode for fair comparison
+        train_loss, train_acc = evaluate(model, train_loader, criterion, device)
+        val_loss, val_acc = evaluate(model, val_loader, criterion, device)
 
         # Append to the history
         history["train_loss"].append(train_loss)
@@ -237,7 +230,6 @@ def train(experiment_name: str, normalize: bool = True, sweep_config_override: d
         history["val_loss"].append(val_loss)
         history["val_acc"].append(val_acc)
 
-        # Log the progress, although it might not be too relevant?
         exp.log(
             f"Epoch {epoch:3d}/{epochs} | "
             f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | "

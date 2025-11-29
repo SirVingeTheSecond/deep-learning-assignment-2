@@ -1,7 +1,4 @@
 import torch
-from torch import nn
-from torch.utils.data import TensorDataset, DataLoader
-
 from config import config
 
 
@@ -21,27 +18,9 @@ class EarlyStopping:
         return self.counter >= self.patience
 
 
-def create_dataloaders(x_train, y_train, x_val, y_val, batch_size: int):
-    """Create DataLoaders from numpy arrays."""
-    train_ds = TensorDataset(
-        torch.from_numpy(x_train).float(),
-        torch.from_numpy(y_train).long()
-    )
-    val_ds = TensorDataset(
-        torch.from_numpy(x_val).float(),
-        torch.from_numpy(y_val).long()
-    )
-
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
-
-    return train_loader, val_loader
-
-
 def train_one_epoch(model, train_loader, criterion, optimizer, device):
     model.train()
     running_loss = 0.0
-    correct = 0
     total = 0
 
     for xb, yb in train_loader:
@@ -54,21 +33,19 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device):
         optimizer.step()
 
         running_loss += loss.item() * xb.size(0)
-        preds = out.argmax(dim=1)
-        correct += (preds == yb).sum().item()
         total += yb.size(0)
 
-    return running_loss / total, correct / total
+    return running_loss / total
 
 
-def validate(model, val_loader, criterion, device):
+def evaluate(model, data_loader, criterion, device):
     model.eval()
     running_loss = 0.0
     correct = 0
     total = 0
 
     with torch.no_grad():
-        for xb, yb in val_loader:
+        for xb, yb in data_loader:
             xb, yb = xb.to(device), yb.to(device)
             out = model(xb)
             loss = criterion(out, yb)
@@ -81,8 +58,11 @@ def validate(model, val_loader, criterion, device):
     return running_loss / total, correct / total
 
 
+def validate(model, val_loader, criterion, device):
+    return evaluate(model, val_loader, criterion, device)
+
+
 def get_early_stopping():
-    """Create EarlyStopping instance from config, or None if disabled."""
     es_config = config.get("early_stopping", {})
     if not es_config.get("enabled", True):
         return None

@@ -7,6 +7,7 @@ from config import config
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 from matplotlib import pyplot as plt
 
+
 def evaluateModel(model: CNN, x_test, y_test):
     model.eval()
     device = config.get("device", "cpu")
@@ -17,7 +18,7 @@ def evaluateModel(model: CNN, x_test, y_test):
     with torch.no_grad():
         class_names = ["CNV", "DME", "Drusen", "Normal"]
         classes = len(class_names)
-        
+
         outputs = model(Xte_t)
         _, predicted = torch.max(outputs, 1)
         correct = (predicted == yte_t).sum().item()
@@ -40,7 +41,7 @@ def evaluateModel(model: CNN, x_test, y_test):
         for i in range(classes):
             for j in range(classes):
                 plt.text(j, i, str(round(cm[i, j], 2)), ha='center', va='center',
-                        color='white' if cm[i, j] > cm.max() / 2 else 'black')
+                         color='white' if cm[i, j] > cm.max() / 2 else 'black')
 
         plt.xlabel('Predicted Label')
         plt.ylabel('True Label')
@@ -61,6 +62,7 @@ def evaluateModel(model: CNN, x_test, y_test):
                 print(f"P(True={true_class} | Pred={pred_class}) = {conditional_prob[j, i]:.3f}")
             print()
 
+
 def evaulateModel(weights_path: str):
     x_train, y_train, x_val, y_val, x_test, y_test = load_data()
 
@@ -73,12 +75,11 @@ def evaulateModel(weights_path: str):
 
     image_size = config.get("image_size", 64)
     dummy = torch.randn(1, 1, image_size, image_size).to(device)
-    model(dummy) # initializes Lazy layers
+    model(dummy)  # initializes Lazy layers
 
     model.load_state_dict(torch.load(weights_path, map_location=device).get("model_state_dict"))
-    
-    evaluateModel(model, x_test, y_test)
 
+    evaluateModel(model, x_test, y_test)
 
 
 if __name__ == "__main__":
@@ -86,7 +87,7 @@ if __name__ == "__main__":
         print("Usage: python main.py <path_to_model_weights>")
         sys.exit(1)
 
-    if (not sys.argv[1].endswith('.pth') and not sys.argv[1].endswith('.pt') ):
+    if (not sys.argv[1].endswith('.pth') and not sys.argv[1].endswith('.pt')):
         print("Please provide a valid model weights file with .pth or .pt extension.")
         sys.exit(1)
 

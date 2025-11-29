@@ -2,10 +2,18 @@
 Grid Search for CNN.
 
 Usage:
-    python sweep.py                    # Screen all, then full train passed
-    python sweep.py --continue-on-pass # Continue to full epochs immediately if passed
-    python sweep.py --list             # Show all combinations
-    python sweep.py --count            # Count combinations
+    Single machine:
+    python sweep.py --sweep-name test --continue-on-pass
+
+    Distributed across machines:
+    python sweep.py --sweep-name test --partition x/3 --continue-on-pass
+
+    (REMEMBER TO SYNC RESULTS FIRST) Merge the results from all machines:
+    python sweep.py --merge v1
+
+    Other:
+    python sweep.py --list
+    python sweep.py --count
 """
 
 import os
@@ -14,6 +22,7 @@ import itertools
 import argparse
 from datetime import datetime
 from typing import Dict, Any, List
+import platform
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -27,22 +36,16 @@ from data import load_data
 from training import train_one_epoch, validate, EarlyStopping
 
 
-sweep_config = base_config.get("sweep", {})
-PARAM_GRID = sweep_config.get("param_grid", {
-    "use_batchnorm": [False, True],
-    "dropout": [0.0, 0.3, 0.5],
-    "num_blocks": [2, 3, 4],
-    "lr": [1e-4, 1e-3, 1e-2],
-    "weight_decay": [0, 1e-4, 5e-4],
-})
-SCREENING_EPOCHS = sweep_config.get("screening_epochs", 10)
-SCREENING_THRESHOLD = sweep_config.get("screening_threshold", 0.90)
-FULL_EPOCHS = sweep_config.get("full_epochs", 50)
+sweep_config = base_config["sweep"]
+PARAM_GRID = sweep_config["param_grid"]
+SCREENING_EPOCHS = sweep_config["screening_epochs"]
+SCREENING_THRESHOLD = sweep_config["screening_threshold"]
+FULL_EPOCHS = sweep_config["full_epochs"]
 
-early_stop_config = base_config.get("early_stopping", {})
-EARLY_STOPPING_ENABLED = early_stop_config.get("enabled", True)
-EARLY_STOPPING_PATIENCE = early_stop_config.get("patience", 5)
-EARLY_STOPPING_MIN_DELTA = early_stop_config.get("min_delta", 0.001)
+early_stop_config = base_config["early_stopping"]
+EARLY_STOPPING_ENABLED = early_stop_config["enabled"]
+EARLY_STOPPING_PATIENCE = early_stop_config["patience"]
+EARLY_STOPPING_MIN_DELTA = early_stop_config["min_delta"]
 
 
 class ConfigurableCNN(nn.Module):
@@ -111,13 +114,15 @@ def count_parameters(model: nn.Module) -> int:
 
 
 def generate_all_combinations(param_grid: Dict[str, List]) -> List[Dict[str, Any]]:
-    keys = list(param_grid.keys())
-    values = list(param_grid.values())
+    # Sort keys for deterministic order across machines
+    keys = sorted(param_grid.keys())
+    values = [param_grid[k] for k in keys]
 
     combinations = []
-    for combo in itertools.product(*values):
+    for i, combo in enumerate(itertools.product(*values)):
         config = dict(zip(keys, combo))
         config["name"] = _config_to_name(config)
+        config["id"] = i
         combinations.append(config)
 
     return combinations
@@ -134,6 +139,14 @@ def _config_to_name(config: Dict[str, Any]) -> str:
     return "_".join(parts)
 
 
+def get_results_path(sweep_dir: str, config_name: str) -> str:
+    return os.path.join(sweep_dir, "results", config_name, "results.json")
+
+
+def config_already_done(sweep_dir: str, config_name: str) -> bool:
+    return os.path.exists(get_results_path(sweep_dir, config_name))
+
+
 def run_experiment_with_screening(
     exp_config: Dict[str, Any],
     train_loader: DataLoader,
@@ -147,7 +160,7 @@ def run_experiment_with_screening(
 ) -> Dict[str, Any]:
     name = exp_config["name"]
     print(f"\n{'='*60}")
-    print(f"Experiment: {name}")
+    print(f"Experiment: {name} (id={exp_config.get('id', '?')})")
     print(f"{'='*60}")
 
     model = ConfigurableCNN(
@@ -211,6 +224,7 @@ def run_experiment_with_screening(
 
     results = {
         "name": name,
+        "id": exp_config.get("id"),
         "config": exp_config,
         "epochs": len(history["train_loss"]),
         "best_val_acc": best_val_acc,
@@ -220,102 +234,29 @@ def run_experiment_with_screening(
         "stopped_early": stopped_early,
         "history": history,
         "parameters": count_parameters(model),
+        "hostname": platform.node(),
     }
 
-    exp_dir = os.path.join(save_dir, name)
+    exp_dir = os.path.join(save_dir, "results", name)
     os.makedirs(exp_dir, exist_ok=True)
 
     with open(os.path.join(exp_dir, "results.json"), "w") as f:
         json.dump(results, f, indent=2)
 
-    torch.save(model.state_dict(), os.path.join(exp_dir, "weights.pt"))
-
-    return results
-
-
-def run_full_training(
-    exp_config: Dict[str, Any],
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    device: str,
-    save_dir: str,
-    epochs: int,
-) -> Dict[str, Any]:
-    name = exp_config["name"]
-    print(f"\n{'='*60}")
-    print(f"Experiment: {name} (full training)")
-    print(f"{'='*60}")
-
-    model = ConfigurableCNN(
-        in_channels=base_config.get("in_channels", 1),
-        num_classes=base_config.get("num_classes", 4),
-        num_blocks=exp_config["num_blocks"],
-        use_batchnorm=exp_config["use_batchnorm"],
-        dropout=exp_config["dropout"],
-    ).to(device)
-
-    print(f"Parameters: {count_parameters(model):,}")
-
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(
-        model.parameters(),
-        lr=exp_config["lr"],
-        weight_decay=exp_config["weight_decay"],
-    )
-
-    history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
-    best_val_acc = 0.0
-    early_stopping = EarlyStopping(EARLY_STOPPING_PATIENCE, EARLY_STOPPING_MIN_DELTA) if EARLY_STOPPING_ENABLED else None
-    stopped_early = False
-
-    for epoch in range(1, epochs + 1):
-        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
-        val_loss, val_acc = validate(model, val_loader, criterion, device)
-
-        history["train_loss"].append(train_loss)
-        history["train_acc"].append(train_acc)
-        history["val_loss"].append(val_loss)
-        history["val_acc"].append(val_acc)
-        best_val_acc = max(best_val_acc, val_acc)
-
-        print(f"Epoch {epoch:3d}/{epochs} | Train: {train_acc:.4f} | Val: {val_acc:.4f}")
-
-        if early_stopping and early_stopping(val_loss):
-            print(f"Early stopping at epoch {epoch}")
-            stopped_early = True
-            break
-
-    results = {
-        "name": name,
-        "config": exp_config,
-        "epochs": len(history["train_loss"]),
-        "best_val_acc": best_val_acc,
-        "final_val_acc": history["val_acc"][-1],
-        "final_train_acc": history["train_acc"][-1],
-        "stopped_early": stopped_early,
-        "history": history,
-        "parameters": count_parameters(model),
-    }
-
-    exp_dir = os.path.join(save_dir, name)
-    os.makedirs(exp_dir, exist_ok=True)
-
-    with open(os.path.join(exp_dir, "results.json"), "w") as f:
-        json.dump(results, f, indent=2)
-
-    torch.save(model.state_dict(), os.path.join(exp_dir, "weights.pt"))
+    torch.save(model.state_dict(), os.path.join(exp_dir, "weights.pth"))
 
     return results
 
 
 def run_grid_search(
+    sweep_name: str,
     continue_on_pass: bool = False,
     screening_epochs: int = SCREENING_EPOCHS,
     screening_threshold: float = SCREENING_THRESHOLD,
     full_epochs: int = FULL_EPOCHS,
+    partition: str = None,
 ):
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    sweep_dir = f"sweeps/{timestamp}"
+    sweep_dir = f"sweeps/{sweep_name}"
     os.makedirs(sweep_dir, exist_ok=True)
 
     device = base_config.get("device", "cpu")
@@ -324,6 +265,7 @@ def run_grid_search(
         device = "cpu"
 
     print(f"Device: {device}")
+    print(f"Hostname: {platform.node()}")
     print(f"Sweep directory: {sweep_dir}")
     print(f"Mode: {'continue-on-pass' if continue_on_pass else 'screen-all-first'}")
 
@@ -344,92 +286,169 @@ def run_grid_search(
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
     all_configs = generate_all_combinations(PARAM_GRID)
-    print(f"Total configurations: {len(all_configs)}")
+    total_configs = len(all_configs)
 
-    with open(os.path.join(sweep_dir, "sweep_config.json"), "w") as f:
-        json.dump({
-            "param_grid": {k: [str(v) for v in vals] for k, vals in PARAM_GRID.items()},
-            "screening_epochs": screening_epochs,
-            "screening_threshold": screening_threshold,
-            "full_epochs": full_epochs,
-            "continue_on_pass": continue_on_pass,
-            "total_combinations": len(all_configs),
-        }, f, indent=2)
+    # Partition configs for distributed runs
+    if partition:
+        part_num, total_parts = map(int, partition.split('/'))
+        chunk_size = total_configs // total_parts
+        start_idx = (part_num - 1) * chunk_size
+        end_idx = start_idx + chunk_size if part_num < total_parts else total_configs
+        all_configs = all_configs[start_idx:end_idx]
+        print(f"Partition {part_num}/{total_parts}: configs {start_idx}-{end_idx-1} (ids), {len(all_configs)} configs")
+
+    print(f"Total configurations in this run: {len(all_configs)}")
+
+    # Save sweep metadata
+    meta_file = os.path.join(sweep_dir, "sweep_config.json")
+    if not os.path.exists(meta_file):
+        with open(meta_file, "w") as f:
+            json.dump({
+                "param_grid": {k: [str(v) for v in vals] for k, vals in PARAM_GRID.items()},
+                "screening_epochs": screening_epochs,
+                "screening_threshold": screening_threshold,
+                "full_epochs": full_epochs,
+                "continue_on_pass": continue_on_pass,
+                "total_combinations": total_configs,
+                "seed": seed,
+                "pytorch_version": torch.__version__,
+            }, f, indent=2)
 
     all_results = []
+    skipped = 0
 
-    if continue_on_pass:
-        for i, exp_config in enumerate(all_configs):
-            print(f"\n[{i+1}/{len(all_configs)}]")
-            results = run_experiment_with_screening(
-                exp_config, train_loader, val_loader, device, sweep_dir,
-                screening_epochs, full_epochs, screening_threshold, continue_on_pass=True
-            )
-            all_results.append(results)
-    else:
-        print(f"\n{'#'*60}")
-        print(f"PHASE 1: SCREENING ({screening_epochs} epochs, threshold={screening_threshold:.0%})")
-        print(f"{'#'*60}")
+    for i, exp_config in enumerate(all_configs):
+        # Resume: skip if already done
+        if config_already_done(sweep_dir, exp_config["name"]):
+            print(f"[{i+1}/{len(all_configs)}] {exp_config['name']} - SKIPPED (already done)")
+            skipped += 1
+            continue
 
-        for i, exp_config in enumerate(all_configs):
-            print(f"\n[{i+1}/{len(all_configs)}]")
-            results = run_experiment_with_screening(
-                exp_config, train_loader, val_loader, device,
-                os.path.join(sweep_dir, "screening"),
-                screening_epochs, full_epochs, screening_threshold, continue_on_pass=False
-            )
-            all_results.append(results)
+        print(f"\n[{i+1}/{len(all_configs)}]")
+        results = run_experiment_with_screening(
+            exp_config, train_loader, val_loader, device, sweep_dir,
+            screening_epochs, full_epochs, screening_threshold, continue_on_pass
+        )
+        all_results.append(results)
 
-        passed_configs = [r["config"] for r in all_results if r["passed_screening"]]
-        print(f"\nScreening complete: {len(passed_configs)}/{len(all_configs)} passed")
+    print(f"\nCompleted: {len(all_results)}, Skipped: {skipped}")
 
-        if passed_configs:
-            print(f"\n{'#'*60}")
-            print(f"PHASE 2: FULL TRAINING ({full_epochs} epochs)")
-            print(f"{'#'*60}")
-
-            full_results = []
-            for i, exp_config in enumerate(passed_configs):
-                print(f"\n[{i+1}/{len(passed_configs)}]")
-                results = run_full_training(
-                    exp_config, train_loader, val_loader, device,
-                    os.path.join(sweep_dir, "full"), full_epochs
-                )
-                full_results.append(results)
-
-            all_results = full_results
-
-    _save_summary(all_results, sweep_dir)
-    _generate_comparison_plot(all_results, sweep_dir)
-    _print_leaderboard(all_results)
+    if all_results:
+        _save_partition_summary(all_results, sweep_dir, partition)
 
     return all_results
 
 
-def _save_summary(results: List[Dict], save_dir: str):
+def _save_partition_summary(results: List[Dict], sweep_dir: str, partition: str = None):
+    """Save summary for this partition."""
     sorted_results = sorted(results, key=lambda x: x["best_val_acc"], reverse=True)
+
+    suffix = f"_part{partition.replace('/', '-')}" if partition else ""
+    summary_file = os.path.join(sweep_dir, f"summary{suffix}.json")
+
     summary = {
+        "partition": partition,
+        "hostname": platform.node(),
+        "timestamp": datetime.now().isoformat(),
         "total": len(results),
         "results": [
-            {"name": r["name"], "best_val_acc": r["best_val_acc"], "epochs": r["epochs"], "params": r["parameters"]}
+            {
+                "name": r["name"],
+                "id": r.get("id"),
+                "best_val_acc": r["best_val_acc"],
+                "epochs": r["epochs"],
+                "params": r["parameters"],
+                "passed_screening": r.get("passed_screening"),
+                "stopped_early": r.get("stopped_early"),
+            }
             for r in sorted_results
         ],
     }
-    with open(os.path.join(save_dir, "summary.json"), "w") as f:
+
+    with open(summary_file, "w") as f:
         json.dump(summary, f, indent=2)
+
+    print(f"Saved summary to: {summary_file}")
+
+
+def merge_results(sweep_name: str):
+    """Merge results from all partitions."""
+    sweep_dir = f"sweeps/{sweep_name}"
+    results_dir = os.path.join(sweep_dir, "results")
+
+    if not os.path.exists(results_dir):
+        print(f"No results directory found at {results_dir}")
+        return
+
+    all_results = []
+
+    for config_name in os.listdir(results_dir):
+        results_file = os.path.join(results_dir, config_name, "results.json")
+        if os.path.exists(results_file):
+            with open(results_file) as f:
+                all_results.append(json.load(f))
+
+    if not all_results:
+        print("No results found to merge")
+        return
+
+    print(f"Found {len(all_results)} completed experiments")
+
+    # Sort by val_acc
+    sorted_results = sorted(all_results, key=lambda x: x["best_val_acc"], reverse=True)
+
+    # Save merged summary
+    summary = {
+        "merged_at": datetime.now().isoformat(),
+        "total": len(sorted_results),
+        "results": [
+            {
+                "name": r["name"],
+                "id": r.get("id"),
+                "best_val_acc": r["best_val_acc"],
+                "epochs": r["epochs"],
+                "params": r["parameters"],
+                "passed_screening": r.get("passed_screening"),
+                "stopped_early": r.get("stopped_early"),
+                "hostname": r.get("hostname"),
+            }
+            for r in sorted_results
+        ],
+    }
+
+    with open(os.path.join(sweep_dir, "summary_merged.json"), "w") as f:
+        json.dump(summary, f, indent=2)
+
+    # Generate comparison plot
+    _generate_comparison_plot(sorted_results, sweep_dir)
+
+    # Print leaderboard
+    _print_leaderboard(sorted_results)
+
+    # Check for missing configs
+    all_configs = generate_all_combinations(PARAM_GRID)
+    completed_names = {r["name"] for r in all_results}
+    missing = [c for c in all_configs if c["name"] not in completed_names]
+
+    if missing:
+        print(f"\nWARNING: {len(missing)} configs not yet completed:")
+        for c in missing[:10]:
+            print(f"  - {c['name']} (id={c['id']})")
+        if len(missing) > 10:
+            print(f"  ... and {len(missing) - 10} more")
 
 
 def _generate_comparison_plot(results: List[Dict], save_dir: str):
     if not results:
         return
 
-    sorted_results = sorted(results, key=lambda x: x["best_val_acc"], reverse=True)[:20]
+    top_results = results[:20]
 
     fig, ax = plt.subplots(figsize=(14, 8))
 
-    names = [r["name"] for r in sorted_results]
-    val_accs = [r["best_val_acc"] for r in sorted_results]
-    train_accs = [r["final_train_acc"] for r in sorted_results]
+    names = [r["name"] for r in top_results]
+    val_accs = [r["best_val_acc"] for r in top_results]
+    train_accs = [r["final_train_acc"] for r in top_results]
 
     x = np.arange(len(names))
     width = 0.35
@@ -438,7 +457,7 @@ def _generate_comparison_plot(results: List[Dict], save_dir: str):
     ax.bar(x + width/2, train_accs, width, label="Train Acc", color="coral")
 
     ax.set_ylabel("Accuracy")
-    ax.set_title(f"Top {len(sorted_results)} Experiments")
+    ax.set_title(f"Top {len(top_results)} Experiments")
     ax.set_xticks(x)
     ax.set_xticklabels(names, rotation=45, ha="right", fontsize=8)
     ax.legend()
@@ -448,44 +467,51 @@ def _generate_comparison_plot(results: List[Dict], save_dir: str):
     plt.tight_layout()
     fig.savefig(os.path.join(save_dir, "comparison.png"), dpi=150)
     plt.close(fig)
+    print(f"Saved comparison plot to: {os.path.join(save_dir, 'comparison.png')}")
 
 
 def _print_leaderboard(results: List[Dict], top_n: int = 10):
-    sorted_results = sorted(results, key=lambda x: x["best_val_acc"], reverse=True)
-
-    print(f"\n{'='*80}")
+    print(f"\n{'='*85}")
     print(f"TOP {top_n} RESULTS")
-    print(f"{'='*80}")
-    print(f"{'Rank':<6}{'Name':<40}{'Val Acc':>12}{'Epochs':>8}{'Params':>12}")
-    print(f"{'-'*80}")
+    print(f"{'='*85}")
+    print(f"{'Rank':<6}{'Name':<35}{'Val Acc':>10}{'Epochs':>8}{'Params':>10}{'Host':<15}")
+    print(f"{'-'*85}")
 
-    for i, r in enumerate(sorted_results[:top_n], 1):
-        print(f"{i:<6}{r['name']:<40}{r['best_val_acc']:>12.4f}{r['epochs']:>8}{r['parameters']:>12,}")
+    for i, r in enumerate(results[:top_n], 1):
+        host = r.get("hostname", "?")[:14]
+        print(f"{i:<6}{r['name']:<35}{r['best_val_acc']:>10.4f}{r['epochs']:>8}{r['parameters']:>10,}{host:<15}")
 
 
 def list_all_combinations():
     configs = generate_all_combinations(PARAM_GRID)
     print(f"\nTotal combinations: {len(configs)}\n")
-    print(f"{'Name':<45} {'BN':<6} {'Drop':<6} {'Blocks':<8} {'LR':<10} {'WD'}")
-    print("-" * 85)
+    print(f"{'ID':<5} {'Name':<40} {'BN':<6} {'Drop':<6} {'Blocks':<8} {'LR':<10} {'WD'}")
+    print("-" * 95)
     for c in configs:
-        print(f"{c['name']:<45} {str(c['use_batchnorm']):<6} {c['dropout']:<6} "
+        print(f"{c['id']:<5} {c['name']:<40} {str(c['use_batchnorm']):<6} {c['dropout']:<6} "
               f"{c['num_blocks']:<8} {c['lr']:<10} {c['weight_decay']}")
 
 
 def count_combinations():
     total = 1
-    for key, values in PARAM_GRID.items():
+    for key, values in sorted(PARAM_GRID.items()):
         print(f"  {key}: {len(values)} values {values}")
         total *= len(values)
     print(f"\nTotal: {total} combinations")
+    print(f"\nWith 3 partitions: {total // 3} configs each (partition 3 gets {total - 2*(total//3)})")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Grid search sweep")
 
+    parser.add_argument("--sweep-name", type=str, default=None,
+                        help="Name for this sweep (required for distributed runs)")
+    parser.add_argument("--partition", type=str, default=None,
+                        help="Run subset of configs, e.g. '1/3', '2/3', '3/3'")
     parser.add_argument("--continue-on-pass", action="store_true",
                         help="Continue to full epochs immediately when screening passes")
+    parser.add_argument("--merge", type=str, default=None, metavar="SWEEP_NAME",
+                        help="Merge results from all partitions for given sweep name")
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--count", action="store_true")
     parser.add_argument("--screening-epochs", type=int, default=SCREENING_EPOCHS)
@@ -498,10 +524,18 @@ if __name__ == "__main__":
         list_all_combinations()
     elif args.count:
         count_combinations()
+    elif args.merge:
+        merge_results(args.merge)
     else:
+        if not args.sweep_name:
+            # Generate default name if not distributed
+            args.sweep_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
         run_grid_search(
+            sweep_name=args.sweep_name,
             continue_on_pass=args.continue_on_pass,
             screening_epochs=args.screening_epochs,
             screening_threshold=args.threshold,
             full_epochs=args.full_epochs,
+            partition=args.partition,
         )

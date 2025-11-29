@@ -66,7 +66,7 @@ class Experiment:
             epoch: Current epoch
             val_acc: Validation accuracy
             val_loss: Validation loss (optional)
-            is_best: If True, save as 'best.pt', otherwise 'final.pt'
+            is_best: If True, save as 'best.pth', otherwise 'final.pth'
         """
         checkpoint = {
             "epoch": epoch,
@@ -76,7 +76,7 @@ class Experiment:
             "val_loss": val_loss,
         }
 
-        filename = "weights_best.pt" if is_best else "weights_final.pt"
+        filename = "weights_best.pth" if is_best else "weights_final.pth"
         path = os.path.join(self.weights_dir, filename)
         torch.save(checkpoint, path)
 
@@ -97,7 +97,7 @@ class Experiment:
 
     def get_weights_path(self, which: str = "best") -> str:
         """Get path to saved weights."""
-        return os.path.join(self.weights_dir, f"{which}.pt")
+        return os.path.join(self.weights_dir, f"{which}.pth")
 
     def get_plots_dir(self) -> str:
         """Get path to plots directory."""
@@ -115,7 +115,7 @@ def load_experiment(experiment_dir: str) -> dict:
         Dict with 'config' and 'checkpoint' keys
     """
     config_path = os.path.join(experiment_dir, "config.json")
-    weights_path = os.path.join(experiment_dir, "weights", "best.pt")
+    weights_path = os.path.join(experiment_dir, "weights", "best.pth")
 
     with open(config_path, "r") as f:
         config = json.load(f)
@@ -140,7 +140,7 @@ def list_experiments(base_dir: str = "experiments") -> list:
         exp_dir = os.path.join(base_dir, name)
         if os.path.isdir(exp_dir):
             config_path = os.path.join(exp_dir, "config.json")
-            weights_path = os.path.join(exp_dir, "weights", "best.pt")
+            weights_path = os.path.join(exp_dir, "weights", "best.pth")
 
             info = {"name": name, "dir": exp_dir}
 

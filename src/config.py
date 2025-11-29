@@ -26,7 +26,21 @@ config = {
 
     # Checkpoint
     "checkpoint_dir": "checkpoints",
-    "save_best": True
+    "save_best": True,
+
+    # Grid search
+    "sweep": {
+        "param_grid": {
+            "use_batchnorm": [False, True],
+            "dropout": [0.0, 0.3, 0.5],
+            "num_blocks": [2, 3, 4],
+            "lr": [1e-4, 1e-3, 1e-2],
+            "weight_decay": [0, 1e-4, 5e-4],
+        },
+        "screening_epochs": 10,
+        "screening_threshold": 0.90,
+        "full_epochs": 50,
+    },
 }
 
 def print_config():

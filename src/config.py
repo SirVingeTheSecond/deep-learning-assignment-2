@@ -4,6 +4,7 @@ config = {
 	# Model
 	"in_channels": 1,
 	"num_classes": 4,
+    "class_names": ["CNV", "DME", "Drusen", "Normal"],
 
 	# Data
 	"image_size": 64,
@@ -15,7 +16,7 @@ config = {
     "lr": 1e-3,
 
     # ToDo:
-    # "weight_decay": 1e-4,
+    "weight_decay": 1e-4,
     # "dropout_rate": 0.5,
 
     "seed": 0,

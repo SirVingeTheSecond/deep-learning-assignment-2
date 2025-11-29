@@ -1,216 +1,276 @@
-import os
+import argparse
 import numpy as np
+import matplotlib.pyplot as plt
 
+import torch
+from torch import nn, optim
+from torch.utils.data import TensorDataset, DataLoader
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
-# Import configurations
-from config import (
-    config,
-)
-
+from config import config
 from data import load_data
-
-try:
-    import torch
-    from torch.utils.data import TensorDataset, DataLoader
-    from torch import nn, optim
-    from cnn import CNN, count_parameters
-except Exception:
-    # Defer import errors until runtime; main will print a helpful message.
-    torch = None
-# The filebuffer appends, remeber to add newlines \n for each output
-logger = open("./output.log","a")
-#logger.writelines("just works \n")
-
-def train_quick():
-    if torch is None:
-        raise ImportError("PyTorch is required to run training. Install torch and torchvision.")
-
-    # Seed
-    np.random.seed(config.get("seed", 0))
-    torch.manual_seed(config.get("seed", 0))
-
-    # Load image tensors (N, C, H, W)
-    x_train, y_train, x_val, y_val, x_test, y_test = load_data()
-
-    device = config.get("device", "cpu")
-    if device == "cuda" and not torch.cuda.is_available():
-        print("CUDA requested but not available; falling back to CPU.")
-        device = "cpu"
-
-    # Convert to torch
-    Xtr_t = torch.from_numpy(x_train).to(torch.float32)
-    ytr_t = torch.from_numpy(y_train).to(torch.long)
-    Xva_t = torch.from_numpy(x_val).to(torch.float32)
-    yva_t = torch.from_numpy(y_val).to(torch.long)
-
-    print(f"Training data shape: {Xtr_t.shape}, Training labels shape: {ytr_t.shape}")
+from cnn import CNN, count_parameters
+from experiment import Experiment
 
 
-    train_ds = TensorDataset(Xtr_t, ytr_t)
-    val_ds = TensorDataset(Xva_t, yva_t)
+def create_dataloaders(x_train, y_train, x_val, y_val, batch_size: int):
+    """Create DataLoaders from numpy arrays."""
+    train_ds = TensorDataset(
+        torch.from_numpy(x_train).float(),
+        torch.from_numpy(y_train).long()
+    )
+    val_ds = TensorDataset(
+        torch.from_numpy(x_val).float(),
+        torch.from_numpy(y_val).long()
+    )
 
-    batch_size = config.get("batch_size", 64)
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
-    # Build model — infer number of channels from the training data
-    inferred_in_channels = Xtr_t.shape[1]
-    model = CNN(in_channels=inferred_in_channels,
-                num_classes=config.get("num_classes", 4))
-    model.to(device)
+    return train_loader, val_loader
 
-    image_size = config.get("image_size", 64)
-    dummy = torch.randn(1, 1, image_size, image_size).to(device)
-    model(dummy) # initializes Lazy layers
 
-    model._init_weights()
+def train_one_epoch(model, train_loader, criterion, optimizer, device):
+    model.train()
+    running_loss = 0.0
+    correct = 0
+    total = 0
 
-    print(f"Model with {count_parameters(model):,} trainable parameters.")
+    for xb, yb in train_loader:
+        xb, yb = xb.to(device), yb.to(device)
 
-    # Optimizer & loss
-    optimizer = optim.Adam(model.parameters(), lr=config.get("lr", 1e-3))
-    criterion = nn.CrossEntropyLoss()
+        optimizer.zero_grad()
+        out = model(xb)
+        loss = criterion(out, yb)
+        loss.backward()
+        optimizer.step()
 
-    # Train and record metrics for plotting
-    epochs = config.get("epochs", 2)
-    train_losses = []
-    train_accs = []
-    val_accs = []
+        running_loss += loss.item() * xb.size(0)
+        preds = out.argmax(dim=1)
+        correct += (preds == yb).sum().item()
+        total += yb.size(0)
 
-    for epoch in range(1, epochs + 1):
-        model.train()
-        running_loss = 0.0
-        correct_train = 0
-        total_train = 0
-        for xb, yb in train_loader:
-            xb = xb.to(device)
-            yb = yb.to(device)
-            optimizer.zero_grad()
+    return running_loss / total, correct / total
+
+
+def validate(model, val_loader, criterion, device):
+    model.eval()
+    running_loss = 0.0
+    correct = 0
+    total = 0
+
+    with torch.no_grad():
+        for xb, yb in val_loader:
+            xb, yb = xb.to(device), yb.to(device)
             out = model(xb)
             loss = criterion(out, yb)
-            loss.backward()
-            optimizer.step()
-
-            preds = out.argmax(dim=1)
-            correct_train += (preds == yb).sum().item()
-            total_train += yb.size(0)
 
             running_loss += loss.item() * xb.size(0)
+            preds = out.argmax(dim=1)
+            correct += (preds == yb).sum().item()
+            total += yb.size(0)
 
-        epoch_loss = running_loss / len(train_loader.dataset)
-        train_acc = correct_train / total_train if total_train > 0 else 0.0
-
-        # Validation
-        model.eval()
-        correct = 0
-        total = 0
-        with torch.no_grad():
-            for xb, yb in val_loader:
-                xb = xb.to(device)
-                yb = yb.to(device)
-                out = model(xb)
-                preds = out.argmax(dim=1)
-                correct += (preds == yb).sum().item()
+    return running_loss / total, correct / total
 
 
-                total += yb.size(0)
+def plot_training_curves(history: dict, experiment: Experiment):
+    epochs = range(1, len(history["train_loss"]) + 1)
 
-        val_acc = correct / total if total > 0 else 0.0
+    # Loss plot
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(epochs, history["train_loss"], "b-", label="Train Loss")
+    ax.plot(epochs, history["val_loss"], "r-", label="Val Loss")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
+    ax.set_title("Training and Validation loss")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    experiment.save_plot(fig, "loss.png")
+    plt.close(fig)
 
-        train_losses.append(epoch_loss)
-        train_accs.append(train_acc)
-        val_accs.append(val_acc)
-
-        print(f"Epoch {epoch}/{epochs} - train_loss: {epoch_loss:.4f} - train_acc: {train_acc:.4f} - val_acc: {val_acc:.4f}")
-
-    torch.save(model.state_dict(), "cnn_weights.pth")
-
-    # Plot metrics using matplotlib (saved to plots/). Handle missing matplotlib gracefully.
-    try:
-        import matplotlib.pyplot as plt
-        plots_dir = os.path.join(os.getcwd(), "plots")
-        os.makedirs(plots_dir, exist_ok=True)
-
-        # Train loss
-        plt.figure()
-        plt.plot(range(1, epochs + 1), train_losses, marker='o')
-        plt.title('Train Loss')
-        plt.xlabel('Epoch')
-        plt.ylabel('Loss')
-        plt.grid(True)
-        out_loss = os.path.join(plots_dir, 'train_loss.png')
-        plt.savefig(out_loss, dpi=150, bbox_inches='tight')
-        plt.close()
-        print(f"Saved train loss plot: {out_loss}")
-
-        # Accuracy: train vs val
-        plt.figure()
-        plt.plot(range(1, epochs + 1), train_accs, label='Train Acc', marker='o')
-        plt.plot(range(1, epochs + 1), val_accs, label='Val Acc', marker='o')
-        plt.title('Accuracy')
-        plt.xlabel('Epoch')
-        plt.ylabel('Accuracy')
-        plt.legend()
-        plt.grid(True)
-        out_acc = os.path.join(plots_dir, 'accuracy.png')
-        plt.savefig(out_acc, dpi=150, bbox_inches='tight')
-        plt.close()
-        print(f"Saved accuracy plot: {out_acc}")
-
-        # generating prediction data on per class level
-        all_preds = []
-        all_true = []
-        model.eval()
-
-        with torch.no_grad():
-            for xb, yb in val_loader:
-                xb = xb.to(device)
-                yb = yb.to(device)
-
-                out = model(xb)
-                preds = out.argmax(dim=1)
-
-                # Move to CPU and convert to numpy to accumulate
-                all_preds.extend(preds.cpu().numpy())
-                all_true.extend(yb.cpu().numpy())
-        from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
-        import matplotlib.pyplot as plt
-
-        # Compute the matrix
-        cm = confusion_matrix(all_true, all_preds, normalize='true')
-
-        # Define class names (If you know them, replace these strings)
-        # Example: class_names = ["Healthy", "Mild", "Moderate", "Severe"]
-        class_names = [str(i) for i in range(config.get("num_classes", 4))]
-
-        # Setup the plot
-        fig, ax = plt.subplots(figsize=(8, 8))
-        disp = ConfusionMatrixDisplay(confusion_matrix=cm,
-                                      display_labels=class_names)
+    # Accuracy plot
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(epochs, history["train_acc"], "b-o", label="Train Acc", markersize=3)
+    ax.plot(epochs, history["val_acc"], "r-o", label="Val Acc", markersize=3)
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Accuracy")
+    ax.set_title("Training and Validation accuracy")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    experiment.save_plot(fig, "accuracy.png")
+    plt.close(fig)
 
 
-        # Plot with a blue colormap
-        disp.plot(cmap=plt.cm.Blues, ax=ax, colorbar=False)
+def plot_confusion_matrix(model, val_loader, device, experiment: Experiment):
+    model.eval()
+    all_preds = []
+    all_true = []
 
-        plt.title('Confusion Matrix')
+    with torch.no_grad():
+        for xb, yb in val_loader:
+            xb, yb = xb.to(device), yb.to(device)
+            out = model(xb)
+            preds = out.argmax(dim=1)
+            all_preds.extend(preds.cpu().numpy())
+            all_true.extend(yb.cpu().numpy())
 
-        # Save results
-        plots_dir = os.path.join(os.getcwd(), "plots")
-        os.makedirs(plots_dir, exist_ok=True)
-        out_cm = os.path.join(plots_dir, 'confusion_matrix.png')
+    cm = confusion_matrix(all_true, all_preds, normalize='true')
 
-        plt.savefig(out_cm, dpi=150, bbox_inches='tight')
-        plt.close()
-        print(f"Saved confusion matrix: {out_cm}")
+    class_names = config.get("class_names", ["CNV", "DME", "Drusen", "Normal"])
 
-    except Exception as e:
-        print("Skipped plotting (matplotlib missing or error):", e)
+    fig, ax = plt.subplots(figsize=(8, 8))
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
+    disp.plot(cmap=plt.cm.Blues, ax=ax, colorbar=False)
+    ax.set_title("Confusion Matrix (Normalized)")
+    experiment.save_plot(fig, "confusion_matrix.png")
+    plt.close(fig)
+
+
+def train(experiment_name: str, normalize: bool = True):
+    # Create experiment (this is auto-generated)
+    exp = Experiment(experiment_name)
+
+    # Build run config which is a copy of base config + runtime settings
+    run_config = config.copy()
+    run_config["normalize"] = normalize
+    run_config["experiment_name"] = experiment_name
+    exp.save_config(run_config)
+
+    # Log the start of the experiment start
+    exp.log("=" * 30)
+    exp.log(f"Experiment: {experiment_name}")
+    exp.log(f"Normalize: {normalize}")
+    exp.log("=" * 30)
+
+    # Seed
+    seed = config.get("seed", 42)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+
+    # Device
+    device = config.get("device", "cpu")
+    if device == "cuda" and not torch.cuda.is_available():
+        device = "cpu"
+        exp.log("Since CUDA is not available, I will be using your slow ass CPU ⎛⎝( ` ᢍ ´ )⎠⎞ᵐᵘʰᵃʰᵃ")
+    exp.log(f"Device: {device}")
+
+    # Load data
+    exp.log("\nLoading data...")
+    x_train, y_train, x_val, y_val, x_test, y_test = load_data(normalize=normalize)
+    exp.log(f"Train: {x_train.shape}, Val: {x_val.shape}, Test: {x_test.shape}")
+
+    # Create dataloaders
+    batch_size = config.get("batch_size", 128)
+    train_loader, val_loader = create_dataloaders(
+        x_train, y_train, x_val, y_val, batch_size
+    )
+
+    # Init model
+    in_channels = config.get("in_channels", 1)
+    num_classes = config.get("num_classes", 4)
+
+    model = CNN(in_channels=in_channels, num_classes=num_classes)
+    model.to(device)
+
+    # Init lazy layers
+    image_size = config.get("image_size", 64)
+    dummy = torch.randn(1, in_channels, image_size, image_size).to(device)
+    model(dummy)
+
+    # Init weights
+    model._init_weights()
+
+    exp.log(f"\nModel parameters: {count_parameters(model):,}")
+
+    # Loss and optimizer
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(
+        model.parameters(),
+        lr=config.get("lr", 1e-3),
+        weight_decay=config.get("weight_decay", 0)
+    )
+
+    # Training history
+    history = {
+        "train_loss": [],
+        "train_acc": [],
+        "val_loss": [],
+        "val_acc": [],
+    }
+
+    best_val_acc = 0.0
+    epochs = config.get("epochs", 50)
+
+    exp.log(f"\nTraining for {epochs} epochs...")
+    exp.log("-" * 60)
+
+    for epoch in range(1, epochs + 1):
+        train_loss, train_acc = train_one_epoch(
+            model, train_loader, criterion, optimizer, device
+        )
+        val_loss, val_acc = validate(
+            model, val_loader, criterion, device
+        )
+
+        # Append to the history
+        history["train_loss"].append(train_loss)
+        history["train_acc"].append(train_acc)
+        history["val_loss"].append(val_loss)
+        history["val_acc"].append(val_acc)
+
+        # Log the progress, although it might not be too relevant?
+        exp.log(
+            f"Epoch {epoch:3d}/{epochs} | "
+            f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | "
+            f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}"
+        )
+
+        # Save best model
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            exp.save_checkpoint(
+                model, optimizer, epoch, val_acc, val_loss, is_best=True
+            )
+
+    # Save final model
+    exp.save_checkpoint(
+        model, optimizer, epochs, val_acc, val_loss, is_best=False
+    )
+
+    # Generate plots
+    exp.log("\nGenerating plots...")
+    plot_training_curves(history, exp)
+    plot_confusion_matrix(model, val_loader, device, exp)
+
+    # Summary
+    exp.log("\n" + "=" * 30)
+    exp.log("Training Complete")
+    exp.log(f"Best validation accuracy: {best_val_acc:.4f}")
+    exp.log(f"Experiment saved to: {exp.dir}")
+    exp.log("=" * 30)
+
+    return exp, model, history
 
 
 if __name__ == "__main__":
-    # Convenience CLI: run a quick train when executing the module.
-    try:
-        train_quick()
-    except Exception as e:
-        print("Failed to run training:", e)
-        raise
+    parser = argparse.ArgumentParser(description="Train the damn CNN")
+    parser.add_argument(
+        "--name",
+        type=str,
+        default="experiment",
+        help="Name of the experiment"
+    )
+    parser.add_argument(
+        "--no-normalize",
+        action="store_true",
+        help="Disable input normalization"
+    )
+
+    args = parser.parse_args()
+
+    train(
+        experiment_name=args.name,
+        normalize=not args.no_normalize
+    )

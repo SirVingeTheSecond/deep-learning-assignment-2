@@ -25,7 +25,6 @@ from typing import Dict, Any, List
 import platform
 
 import numpy as np
-import matplotlib.pyplot as plt
 
 import torch
 from torch import nn, optim
@@ -33,7 +32,10 @@ from torch.utils.data import TensorDataset, DataLoader
 
 from config import config as base_config
 from data import load_data
-from training import train_one_epoch, validate, EarlyStopping
+from models import ConfigurableCNN
+from training import train_one_epoch, evaluate, EarlyStopping
+from visualization import plot_sweep_comparison
+from utils import count_parameters
 
 
 sweep_config = base_config["sweep"]
@@ -46,71 +48,6 @@ early_stop_config = base_config["early_stopping"]
 EARLY_STOPPING_ENABLED = early_stop_config["enabled"]
 EARLY_STOPPING_PATIENCE = early_stop_config["patience"]
 EARLY_STOPPING_MIN_DELTA = early_stop_config["min_delta"]
-
-
-class ConfigurableCNN(nn.Module):
-
-    def __init__(
-        self,
-        in_channels: int = 1,
-        num_classes: int = 4,
-        num_blocks: int = 2,
-        use_batchnorm: bool = False,
-        dropout: float = 0.5,
-        base_filters: int = 32,
-    ):
-        super().__init__()
-
-        layers = []
-        in_ch = in_channels
-        out_ch = base_filters
-
-        for _ in range(num_blocks):
-            layers.append(nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1))
-            if use_batchnorm:
-                layers.append(nn.BatchNorm2d(out_ch))
-            layers.append(nn.ReLU(inplace=True))
-            layers.append(nn.MaxPool2d(kernel_size=2))
-            in_ch = out_ch
-            out_ch = min(out_ch * 2, 256)
-
-        self.features = nn.Sequential(*layers)
-
-        final_size = 64 // (2 ** num_blocks)
-        flatten_dim = in_ch * final_size * final_size
-
-        classifier_layers = [
-            nn.Flatten(),
-            nn.Linear(flatten_dim, 128),
-            nn.ReLU(inplace=True),
-        ]
-        if dropout > 0:
-            classifier_layers.append(nn.Dropout(p=dropout))
-        classifier_layers.append(nn.Linear(128, num_classes))
-
-        self.classifier = nn.Sequential(*classifier_layers)
-        self._init_weights()
-
-    def forward(self, x):
-        return self.classifier(self.features(x))
-
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.ones_(m.weight)
-                nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0.0, 0.01)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-
-
-def count_parameters(model: nn.Module) -> int:
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 def generate_all_combinations(param_grid: Dict[str, List]) -> List[Dict[str, Any]]:
@@ -188,7 +125,7 @@ def run_experiment_with_screening(
     # Screening phase
     for epoch in range(1, screening_epochs + 1):
         train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
-        val_loss, val_acc = validate(model, val_loader, criterion, device)
+        val_loss, val_acc = evaluate(model, val_loader, criterion, device)
 
         history["train_loss"].append(train_loss)
         history["train_acc"].append(train_acc)
@@ -207,7 +144,7 @@ def run_experiment_with_screening(
         print(f"\nContinuing to {full_epochs} epochs...")
         for epoch in range(screening_epochs + 1, full_epochs + 1):
             train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
-            val_loss, val_acc = validate(model, val_loader, criterion, device)
+            val_loss, val_acc = evaluate(model, val_loader, criterion, device)
 
             history["train_loss"].append(train_loss)
             history["train_acc"].append(train_acc)
@@ -226,24 +163,21 @@ def run_experiment_with_screening(
         "name": name,
         "id": exp_config.get("id"),
         "config": exp_config,
-        "epochs": len(history["train_loss"]),
+        "history": history,
         "best_val_acc": best_val_acc,
-        "final_val_acc": history["val_acc"][-1],
         "final_train_acc": history["train_acc"][-1],
+        "epochs": len(history["train_loss"]),
+        "parameters": count_parameters(model),
         "passed_screening": passed,
         "stopped_early": stopped_early,
-        "history": history,
-        "parameters": count_parameters(model),
         "hostname": platform.node(),
+        "timestamp": datetime.now().isoformat(),
     }
 
-    exp_dir = os.path.join(save_dir, "results", name)
-    os.makedirs(exp_dir, exist_ok=True)
-
-    with open(os.path.join(exp_dir, "results.json"), "w") as f:
+    results_path = get_results_path(save_dir, name)
+    os.makedirs(os.path.dirname(results_path), exist_ok=True)
+    with open(results_path, "w") as f:
         json.dump(results, f, indent=2)
-
-    torch.save(model.state_dict(), os.path.join(exp_dir, "weights.pth"))
 
     return results
 
@@ -259,60 +193,48 @@ def run_grid_search(
     sweep_dir = f"sweeps/{sweep_name}"
     os.makedirs(sweep_dir, exist_ok=True)
 
-    device = base_config.get("device", "cpu")
-    if device == "cuda" and not torch.cuda.is_available():
-        print("CUDA not available, using CPU.")
-        device = "cpu"
+    all_configs = generate_all_combinations(PARAM_GRID)
 
+    # Partition configs for distributed runs
+    if partition:
+        partition_idx, total_partitions = map(int, partition.split('/'))
+        partition_idx -= 1
+        all_configs = all_configs[partition_idx::total_partitions]
+        print(f"Running partition {partition_idx+1}/{total_partitions}: {len(all_configs)} configs")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
-    print(f"Hostname: {platform.node()}")
-    print(f"Sweep directory: {sweep_dir}")
-    print(f"Mode: {'continue-on-pass' if continue_on_pass else 'screen-all-first'}")
-
-    seed = base_config.get("seed", 42)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
 
     print("\nLoading data...")
     x_train, y_train, x_val, y_val, _, _ = load_data(normalize=True)
 
-    train_ds = TensorDataset(torch.from_numpy(x_train).float(), torch.from_numpy(y_train).long())
-    val_ds = TensorDataset(torch.from_numpy(x_val).float(), torch.from_numpy(y_val).long())
-
     batch_size = base_config.get("batch_size", 128)
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
+    train_ds = TensorDataset(
+        torch.from_numpy(x_train).float(),
+        torch.from_numpy(y_train).long()
+    )
+    val_ds = TensorDataset(
+        torch.from_numpy(x_val).float(),
+        torch.from_numpy(y_val).long()
+    )
 
-    all_configs = generate_all_combinations(PARAM_GRID)
-    total_configs = len(all_configs)
-
-    # Partition configs for distributed runs
-    if partition:
-        part_num, total_parts = map(int, partition.split('/'))
-        chunk_size = total_configs // total_parts
-        start_idx = (part_num - 1) * chunk_size
-        end_idx = start_idx + chunk_size if part_num < total_parts else total_configs
-        all_configs = all_configs[start_idx:end_idx]
-        print(f"Partition {part_num}/{total_parts}: configs {start_idx}-{end_idx-1} (ids), {len(all_configs)} configs")
-
-    print(f"Total configurations in this run: {len(all_configs)}")
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, pin_memory=True)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, pin_memory=True)
 
     # Save sweep metadata
-    meta_file = os.path.join(sweep_dir, "sweep_config.json")
-    if not os.path.exists(meta_file):
-        with open(meta_file, "w") as f:
-            json.dump({
-                "param_grid": {k: [str(v) for v in vals] for k, vals in PARAM_GRID.items()},
-                "screening_epochs": screening_epochs,
-                "screening_threshold": screening_threshold,
-                "full_epochs": full_epochs,
-                "continue_on_pass": continue_on_pass,
-                "total_combinations": total_configs,
-                "seed": seed,
-                "pytorch_version": torch.__version__,
-            }, f, indent=2)
+    with open(os.path.join(sweep_dir, "config.json"), "w") as f:
+        json.dump({
+            "sweep_name": sweep_name,
+            "param_grid": PARAM_GRID,
+            "screening_epochs": screening_epochs,
+            "screening_threshold": screening_threshold,
+            "full_epochs": full_epochs,
+            "continue_on_pass": continue_on_pass,
+            "partition": partition,
+            "total_configs": len(all_configs),
+            "device": device,
+            "pytorch_version": torch.__version__,
+        }, f, indent=2)
 
     all_results = []
     skipped = 0
@@ -340,7 +262,6 @@ def run_grid_search(
 
 
 def _save_partition_summary(results: List[Dict], sweep_dir: str, partition: str = None):
-    """Save summary for this partition."""
     sorted_results = sorted(results, key=lambda x: x["best_val_acc"], reverse=True)
 
     suffix = f"_part{partition.replace('/', '-')}" if partition else ""
@@ -372,7 +293,6 @@ def _save_partition_summary(results: List[Dict], sweep_dir: str, partition: str 
 
 
 def merge_results(sweep_name: str):
-    """Merge results from all partitions."""
     sweep_dir = f"sweeps/{sweep_name}"
     results_dir = os.path.join(sweep_dir, "results")
 
@@ -420,7 +340,7 @@ def merge_results(sweep_name: str):
         json.dump(summary, f, indent=2)
 
     # Generate comparison plot
-    _generate_comparison_plot(sorted_results, sweep_dir)
+    plot_sweep_comparison(sorted_results, os.path.join(sweep_dir, "comparison.png"))
 
     # Print leaderboard
     _print_leaderboard(sorted_results)
@@ -436,38 +356,6 @@ def merge_results(sweep_name: str):
             print(f"  - {c['name']} (id={c['id']})")
         if len(missing) > 10:
             print(f"  ... and {len(missing) - 10} more")
-
-
-def _generate_comparison_plot(results: List[Dict], save_dir: str):
-    if not results:
-        return
-
-    top_results = results[:20]
-
-    fig, ax = plt.subplots(figsize=(14, 8))
-
-    names = [r["name"] for r in top_results]
-    val_accs = [r["best_val_acc"] for r in top_results]
-    train_accs = [r["final_train_acc"] for r in top_results]
-
-    x = np.arange(len(names))
-    width = 0.35
-
-    ax.bar(x - width/2, val_accs, width, label="Val Acc", color="steelblue")
-    ax.bar(x + width/2, train_accs, width, label="Train Acc", color="coral")
-
-    ax.set_ylabel("Accuracy")
-    ax.set_title(f"Top {len(top_results)} Experiments")
-    ax.set_xticks(x)
-    ax.set_xticklabels(names, rotation=45, ha="right", fontsize=8)
-    ax.legend()
-    ax.set_ylim(0.8, 1.0)
-    ax.grid(True, alpha=0.3, axis="y")
-
-    plt.tight_layout()
-    fig.savefig(os.path.join(save_dir, "comparison.png"), dpi=150)
-    plt.close(fig)
-    print(f"Saved comparison plot to: {os.path.join(save_dir, 'comparison.png')}")
 
 
 def _print_leaderboard(results: List[Dict], top_n: int = 10):

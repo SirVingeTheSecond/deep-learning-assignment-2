@@ -2,95 +2,25 @@ import argparse
 import json
 import os
 import numpy as np
-import matplotlib.pyplot as plt
 
 import torch
 from torch import nn, optim
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
 from config import config
 from data import load_data, create_dataloaders
-from cnn import CNN, count_parameters
+from models import CNN, ConfigurableCNN
 from experiment import Experiment
 from training import train_one_epoch, evaluate, get_early_stopping
-
-
-# What a getter...
-def get_configurable_cnn():
-    from sweep import ConfigurableCNN
-    return ConfigurableCNN
-
-
-def plot_training_curves(history: dict, experiment: Experiment):
-    epochs = range(1, len(history["train_loss"]) + 1)
-
-    # Loss plot
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(epochs, history["train_loss"], "b-", label="Train Loss")
-    ax.plot(epochs, history["val_loss"], "r-", label="Val Loss")
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel("Loss")
-    ax.set_title("Training and Validation loss")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    experiment.save_plot(fig, "loss.png")
-    plt.close(fig)
-
-    # Accuracy plot
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(epochs, history["train_acc"], "b-o", label="Train Acc", markersize=3)
-    ax.plot(epochs, history["val_acc"], "r-o", label="Val Acc", markersize=3)
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel("Accuracy")
-    ax.set_title("Training and Validation accuracy")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    experiment.save_plot(fig, "accuracy.png")
-    plt.close(fig)
-
-
-def plot_confusion_matrix(model, val_loader, device, experiment: Experiment):
-    model.eval()
-    all_preds = []
-    all_true = []
-
-    with torch.no_grad():
-        for xb, yb in val_loader:
-            xb, yb = xb.to(device), yb.to(device)
-            out = model(xb)
-            preds = out.argmax(dim=1)
-            all_preds.extend(preds.cpu().numpy())
-            all_true.extend(yb.cpu().numpy())
-
-    cm = confusion_matrix(all_true, all_preds, normalize='true')
-
-    class_names = config.get("class_names", ["CNV", "DME", "Drusen", "Normal"])
-
-    fig, ax = plt.subplots(figsize=(8, 8))
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
-    disp.plot(cmap=plt.cm.Blues, ax=ax, colorbar=False)
-    ax.set_title("Confusion Matrix (Normalized)")
-    experiment.save_plot(fig, "confusion_matrix.png")
-    plt.close(fig)
+from visualization import plot_training_curves, plot_accuracy_curves, plot_confusion_matrix
+from utils import count_parameters, get_device
 
 
 def load_sweep_config(sweep_path: str) -> dict:
-    """
-    Load config from a sweep result.
-
-    Args:
-        sweep_path: Path like 'v1/bn_d0.3_b4_lr0.001_wd0.0001'
-                    or full path to results.json
-
-    Returns:
-        Config dict with model hyperparameters
-    """
     if sweep_path.endswith('.json'):
         results_file = sweep_path
     else:
         results_file = os.path.join("sweeps", sweep_path, "results.json")
         if not os.path.exists(results_file):
-            # Try with results/ subdirectory
             parts = sweep_path.split('/')
             if len(parts) == 2:
                 results_file = os.path.join("sweeps", parts[0], "results", parts[1], "results.json")
@@ -134,10 +64,7 @@ def train(experiment_name: str, normalize: bool = True, sweep_config_override: d
         torch.cuda.manual_seed(seed)
 
     # Device
-    device = config.get("device", "cpu")
-    if device == "cuda" and not torch.cuda.is_available():
-        device = "cpu"
-        exp.log("CUDA not available, using CPU")
+    device = get_device(config.get("device", "cpu"))
     exp.log(f"Device: {device}")
 
     # Load data
@@ -147,8 +74,8 @@ def train(experiment_name: str, normalize: bool = True, sweep_config_override: d
 
     # Create dataloaders
     batch_size = config.get("batch_size", 128)
-    train_loader, val_loader = create_dataloaders(
-        x_train, y_train, x_val, y_val, batch_size
+    train_loader, val_loader, train_loader_clean = create_dataloaders(
+        x_train, y_train, x_val, y_val, batch_size, augment=False, balance=False
     )
 
     # Init model
@@ -158,7 +85,6 @@ def train(experiment_name: str, normalize: bool = True, sweep_config_override: d
     if sweep_config_override:
         # Use ConfigurableCNN with sweep hyperparameters
         sweep_cfg = sweep_config_override.get("config", {})
-        ConfigurableCNN = get_configurable_cnn()
         model = ConfigurableCNN(
             in_channels=in_channels,
             num_classes=num_classes,
@@ -220,8 +146,8 @@ def train(experiment_name: str, normalize: bool = True, sweep_config_override: d
         # Train
         train_one_epoch(model, train_loader, criterion, optimizer, device)
 
-        # Evaluate both train and val in eval mode for fair comparison
-        train_loss, train_acc = evaluate(model, train_loader, criterion, device)
+        # Evaluate train on clean loader (no augmentation) and val
+        train_loss, train_acc = evaluate(model, train_loader_clean, criterion, device)
         val_loss, val_acc = evaluate(model, val_loader, criterion, device)
 
         # Append to the history
@@ -255,8 +181,12 @@ def train(experiment_name: str, normalize: bool = True, sweep_config_override: d
 
     # Generate plots
     exp.log("\nGenerating plots...")
-    plot_training_curves(history, exp)
-    plot_confusion_matrix(model, val_loader, device, exp)
+    plot_training_curves(history, os.path.join(exp.plots_dir, "loss.png"))
+    plot_accuracy_curves(history, os.path.join(exp.plots_dir, "accuracy.png"))
+
+    class_names = config.get("class_names", ["CNV", "DME", "Drusen", "Normal"])
+    plot_confusion_matrix(model, val_loader, class_names, device,
+                          os.path.join(exp.plots_dir, "confusion_matrix.png"))
 
     # Summary
     exp.log("\n" + "=" * 30)
@@ -269,7 +199,7 @@ def train(experiment_name: str, normalize: bool = True, sweep_config_override: d
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train the damn CNN")
+    parser = argparse.ArgumentParser(description="Train CNN on OCTMNIST")
     parser.add_argument(
         "--name",
         type=str,

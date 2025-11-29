@@ -1,98 +1,58 @@
 import os
 import sys
 import torch
-from cnn import CNN
+
+from models import CNN, ConfigurableCNN
 from data import load_data
 from config import config
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
-from matplotlib import pyplot as plt
+from evaluation import evaluate_model, display_confusion_matrix, print_conditional_probabilities
+from utils import get_device
 
 
-def evaluateModel(model: CNN, x_test, y_test):
-    model.eval()
-    device = config.get("device", "cpu")
-
-    Xte_t = torch.from_numpy(x_test).to(torch.float32).to(device)
-    yte_t = torch.from_numpy(y_test).to(torch.long).to(device)
-
-    with torch.no_grad():
-        class_names = ["CNV", "DME", "Drusen", "Normal"]
-        classes = len(class_names)
-
-        outputs = model(Xte_t)
-        _, predicted = torch.max(outputs, 1)
-        correct = (predicted == yte_t).sum().item()
-        total = yte_t.size(0)
-        accuracy = correct / total * 100
-        print(f"Test Accuracy: {accuracy:.2f}%")
-
-        # Confusion Matrix
-        cm = confusion_matrix(y_test, predicted.cpu().numpy())
-        plt.figure(figsize=(10, 8))
-        plt.imshow(cm, cmap='Blues')
-        plt.title("Confusion Matrix")
-        plt.colorbar()
-
-        tick_labels = [c[:] for c in class_names]
-        plt.xticks(range(classes), tick_labels, rotation=45, ha='right')
-        plt.yticks(range(classes), tick_labels)
-
-        # Add text annotations
-        for i in range(classes):
-            for j in range(classes):
-                plt.text(j, i, str(round(cm[i, j], 2)), ha='center', va='center',
-                         color='white' if cm[i, j] > cm.max() / 2 else 'black')
-
-        plt.xlabel('Predicted Label')
-        plt.ylabel('True Label')
-        plt.tight_layout()
-        plt.show()
-        plt.close()
-
-        # Conditional probability P(True = i | Predicted = j)
-        cm = confusion_matrix(y_test, predicted.cpu().numpy())
-
-        # Column-normalized confusion matrix (prediction-conditioned)
-        col_sums = cm.sum(axis=0, keepdims=True)
-        conditional_prob = cm / col_sums
-
-        print("\nConditional probability P(True | Predicted):")
-        for i, pred_class in enumerate(class_names):
-            for j, true_class in enumerate(class_names):
-                print(f"P(True={true_class} | Pred={pred_class}) = {conditional_prob[j, i]:.3f}")
-            print()
-
-
-def evaulateModel(weights_path: str):
+def evaluate_checkpoint(weights_path: str):
     x_train, y_train, x_val, y_val, x_test, y_test = load_data()
 
-    device = config.get("device", "cpu")
+    device = get_device(config.get("device", "cpu"))
 
-    device = config.get("device", "cpu")
+    checkpoint = torch.load(weights_path, map_location=device)
 
     model = CNN(num_classes=config.get("num_classes", 4))
     model.to(device)
 
     image_size = config.get("image_size", 64)
     dummy = torch.randn(1, 1, image_size, image_size).to(device)
-    model(dummy)  # initializes Lazy layers
+    model(dummy)
 
-    model.load_state_dict(torch.load(weights_path, map_location=device).get("model_state_dict"))
+    try:
+        model.load_state_dict(checkpoint.get("model_state_dict"))
+    except RuntimeError:
+        print("Warning: Standard CNN architecture doesn't match checkpoint.")
+        print("Checkpoint may be from ConfigurableCNN. Attempting to load...")
+        model = ConfigurableCNN(num_classes=config.get("num_classes", 4))
+        model.to(device)
+        model.load_state_dict(checkpoint.get("model_state_dict"))
 
-    evaluateModel(model, x_test, y_test)
+    class_names = config.get("class_names", ["CNV", "DME", "Drusen", "Normal"])
+
+    results = evaluate_model(model, x_test, y_test, class_names, device)
+
+    print(f"Test Accuracy: {results['accuracy'] * 100:.2f}%")
+
+    display_confusion_matrix(results['confusion_matrix'], class_names)
+    print_conditional_probabilities(results['confusion_matrix'], class_names)
 
 
 if __name__ == "__main__":
-    if (len(sys.argv) != 2):
-        print("Usage: python main.py <path_to_model_weights>")
+    if len(sys.argv) != 2:
+        print("Usage: python tests.py <path_to_model_weights>")
         sys.exit(1)
 
-    if (not sys.argv[1].endswith('.pth') and not sys.argv[1].endswith('.pt')):
+    if not sys.argv[1].endswith('.pth') and not sys.argv[1].endswith('.pt'):
         print("Please provide a valid model weights file with .pth or .pt extension.")
         sys.exit(1)
 
-    if (not os.path.isfile(sys.argv[1])):
+    if not os.path.isfile(sys.argv[1]):
         print(f"File {sys.argv[1]} does not exist.")
         sys.exit(1)
 
-    evaulateModel(sys.argv[1])
+    evaluate_checkpoint(sys.argv[1])

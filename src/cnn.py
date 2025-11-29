@@ -7,35 +7,35 @@ class CNN(nn.Module):
     def __init__(self, in_channels=1, num_classes=4, dropout=0.3):
         super().__init__()
         self.features = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(32),
+            nn.LazyConv2d(32, kernel_size=3, padding=1, bias=False),
+            nn.LazyBatchNorm2d(),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=2),  # 32x32
-            nn.Conv2d(32, 64, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(64),
+            nn.LazyConv2d(64, kernel_size=3, padding=1, bias=False),
+            nn.LazyBatchNorm2d(),
             nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(64),
+            nn.LazyConv2d(64, kernel_size=3, padding=1, bias=False),
+            nn.LazyBatchNorm2d(),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=2),  # 16x16
-            nn.Conv2d(64, 128, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(128),
+            nn.LazyConv2d(128, kernel_size=3, padding=1, bias=False),
+            nn.LazyBatchNorm2d(),
             nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(128),
+            nn.LazyConv2d(128, kernel_size=3, padding=1, bias=False),
+            nn.LazyBatchNorm2d(),
             nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(128),
+            nn.LazyConv2d(128, kernel_size=3, padding=1, bias=False),
+            nn.LazyBatchNorm2d(),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=2),  # 8x8
         )
 
         self.classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(128 * 8 * 8, 256),
+            nn.LazyLinear(256),
             nn.ReLU(inplace=True),
             nn.Dropout(dropout),
-            nn.Linear(256, num_classes)
+            nn.LazyLinear(num_classes)
         )
 
         self._init_weights()

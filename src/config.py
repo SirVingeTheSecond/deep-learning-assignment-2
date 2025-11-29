@@ -11,7 +11,7 @@ config = {
     "image_size": 64,
 
     # Training
-    "batch_size": 128,
+    "batch_size": 32,
     "epochs": 20,
     "lr": 1e-3,
     "weight_decay": 1e-4,

@@ -21,6 +21,7 @@ class EarlyStopping:
 def train_one_epoch(model, train_loader, criterion, optimizer, device):
     model.train()
     running_loss = 0.0
+    correct = 0
     total = 0
 
     for xb, yb in train_loader:
@@ -33,9 +34,11 @@ def train_one_epoch(model, train_loader, criterion, optimizer, device):
         optimizer.step()
 
         running_loss += loss.item() * xb.size(0)
+        preds = out.argmax(dim=1)
+        correct += (preds == yb).sum().item()
         total += yb.size(0)
 
-    return running_loss / total
+    return running_loss / total, correct / total
 
 
 def evaluate(model, data_loader, criterion, device):
@@ -56,10 +59,6 @@ def evaluate(model, data_loader, criterion, device):
             total += yb.size(0)
 
     return running_loss / total, correct / total
-
-
-def validate(model, val_loader, criterion, device):
-    return evaluate(model, val_loader, criterion, device)
 
 
 def get_early_stopping():

@@ -2,8 +2,10 @@ import os
 from medmnist import OCTMNIST
 from matplotlib import pyplot as plt
 import numpy as np
+from collections import Counter
+from torchvision import transforms
 
-def load_data(normalize=True):
+def load_data(normalize=True, augment_minority=True):
     train = OCTMNIST("train", download = True, size=64)
     val = OCTMNIST("val", download = True, size=64)
     test = OCTMNIST("test", download = True, size=64)
@@ -21,6 +23,42 @@ def load_data(normalize=True):
     x_test = np.array(test.imgs).astype(np.float32)
     x_test = x_test[:, None, :, :]     # shape → (N, 1, 64, 64)
     y_test = np.array(test.labels).ravel().astype(np.int64)
+
+    # Data augmentation for minority classes
+    if augment_minority:
+        counter = Counter(y_train)
+        max_count = max(counter.values())
+
+        aug_transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomRotation(20),
+            transforms.ColorJitter(brightness=0.1, contrast=0.1),
+            transforms.ToTensor()
+        ])
+
+        augmented_images = []
+        augmented_labels = []
+
+        for cls, count in counter.items():
+            if count < max_count:
+                # Find indices of this class
+                indices = np.where(y_train == cls)[0]
+                # Number of new samples to generate
+                n_aug = max_count - count
+
+                for i in range(n_aug):
+                    idx = indices[i % len(indices)]
+                    img = x_train[idx, 0, :, :]  # remove channel dim for PIL
+                    img_aug = aug_transform(img.astype(np.uint8))  # PIL expects uint8
+                    img_aug = np.array(img_aug.numpy()[0], dtype=np.float32)  # back to numpy
+                    augmented_images.append(img_aug[None, :, :])  # add channel dim
+                    augmented_labels.append(cls)
+
+        if augmented_images:
+            x_train = np.concatenate([x_train, np.array(augmented_images)], axis=0)
+            y_train = np.concatenate([y_train, np.array(augmented_labels)], axis=0)
+            print(f"After augmentation: train size={len(x_train)}")
 
     # Normalization using the training set only
     if normalize:
